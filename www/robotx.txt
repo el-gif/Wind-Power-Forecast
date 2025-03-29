@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://windpower-bjadbff2cwdsgggj.germanywestcentral-01.azurewebsites.net/sitemap.xml
