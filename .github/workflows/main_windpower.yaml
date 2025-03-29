@@ -1,0 +1,58 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
+
+name: Deploy Selected Files to Azure Web App - windpower
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Package and Deploy Web App
+    runs-on: ubuntu-latest
+    environment:
+      name: 'Production'
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up deployment folder
+        run: |
+          mkdir deploy
+          cp requirements.txt deploy/
+          cp -r www deploy/
+          cp -r data_hosting deploy/
+          mkdir -p deploy/modelC/parameters_deployment
+          cp -r modelC/parameters_deployment/* deploy/modelC/parameters_deployment/
+          mkdir -p deploy/modelC
+          cp modelC/webapp_modelC.py deploy/modelC/
+
+      - name: Create ZIP Package
+        run: |
+          cd deploy
+          zip -r ../webapp.zip .
+          cd ..
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_00A9D181AC074F8682E07EBEEFEB5832 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_2FAEC907AA904D89897388DEEA9DF7F4 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_E0E03DAFF4884747AD4DA7BC40D2E436 }}
+
+      - name: Deploy to Azure Web App using ZIP Deploy
+        uses: azure/webapps-deploy@v3
+        id: deploy-to-webapp
+        with:
+          app-name: 'windpower'
+          slot-name: 'Production'
+          package: webapp.zip

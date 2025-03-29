@@ -4,8 +4,9 @@ os.environ['FOR_DISABLE_CONSOLE_CTRL_HANDLER'] = 'T' # to disable Ctrl+C crashin
 from openpyxl import Workbook
 from shiny import ui, App, reactive, render
 from shinywidgets import render_widget, output_widget
-from ipyleaflet import Map, Marker, MarkerCluster, WidgetControl, FullScreenControl, ScaleControl
-from ipywidgets import SelectionSlider, Play, VBox, jslink, Layout, HTML, Button # pip install ipywidgets==7.6.5, because version 8 has an issue with popups (https://stackoverflow.com/questions/75434737/shiny-for-python-using-add-layer-for-popus-from-ipyleaflet)
+from ipyleaflet import Map, Marker, MarkerCluster, WidgetControl, FullScreenControl, Heatmap, ScaleControl
+from ipyleaflet.velocity import Velocity
+from ipywidgets import SelectionSlider, Play, VBox, HBox, jslink, Layout, HTML, Dropdown, Text, Checkbox # pip install ipywidgets==7.6.5, because version 8 has an issue with popups (https://stackoverflow.com/questions/75434737/shiny-for-python-using-add-layer-for-popus-from-ipyleaflet)
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -35,6 +36,46 @@ lon_min, lon_max = -25, 45
 
 # Selectable time zones
 timezone_list = ["UTC-1", "UTC", "UTC+1", "UTC+2", "UTC+3"]
+
+country_centers = {
+    'Austria': [47.5162, 14.5501],
+    'Belarus': [53.9006, 27.5590],
+    'Belgium': [50.8503, 4.3517],
+    'Bosnia and Herzegovina': [44.1741, 17.9721],
+    'Bulgaria': [42.7339, 25.4858],
+    'Croatia': [45.1000, 15.2000],
+    'Czech Republic': [49.8175, 15.4730],
+    'Denmark': [56.2639, 9.5018],
+    'Estonia': [58.5953, 25.0136],
+    'Faroe Islands': [62.0000, -6.7833],
+    'Finland': [64.0000, 26.0000],
+    'France': [46.6034, 1.8883],
+    'Germany': [51.1657, 10.4515],
+    'Greece': [39.0000, 22.0000],
+    'Hungary': [47.1625, 19.5033],
+    'Iceland': [64.9631, -19.0208],
+    'Ireland': [53.4129, -8.2439],
+    'Italy': [41.8719, 12.5674],
+    'Kosovo': [42.6026, 20.9029],
+    'Latvia': [56.8796, 24.6032],
+    'Lithuania': [55.1694, 23.8813],
+    'Luxembourg': [49.6117, 6.1319],
+    'Montenegro': [42.7087, 19.3744],
+    'Netherlands': [52.1326, 5.2913],
+    'North Macedonia': [41.6086, 21.7453],
+    'Norway': [60.4720, 8.4689],
+    'Poland': [52.0000, 19.0000],
+    'Portugal': [39.3999, -8.2245],
+    'Romania': [45.9432, 24.9668],
+    'Serbia': [44.0165, 21.0059],
+    'Slovakia': [48.6690, 19.6990],
+    'Slovenia': [46.1512, 14.9955],
+    'Spain': [40.4637, -3.7492],
+    'Sweden': [62.0000, 15.0000],
+    'Switzerland': [46.8182, 8.2275],
+    'Ukraine': [48.3794, 31.1656],
+    'United-Kingdom': [55.3781, -3.4360]
+}
 
 # Filter data for Europe and extract relevant columns
 df = pd.read_parquet("data_hosting/The_Wind_Power.parquet") # 0.7 seconds when WPPs already regionally filtered and stored as parquet file. As unfiltered excel file it takes 11 seconds
@@ -348,6 +389,24 @@ def server(input, output, session):
         ui.update_navs("navbar_selected", selected="customise_WPP")
 
 
+# map()
+#     update_marker_locations()
+#         marker_toggle()
+#         marker_checkbox.observe(marker_toggle)
+#         update_predictions()
+#             (calculation of step_index)
+#             velocity_toggle()
+#             velocity_checkbox.observe(velocity_toggle)
+#             if selected_country != "Select a Country":
+#                (forecasting)
+#                (update marker popups)
+#                heatmap_toggle()
+#                heatmap_checkbox.observe(velocity_toggle)
+#         update_predictions(None)
+#         slider.observe(update_predictions)
+#     update_marker_locations(None)
+#     country_dropdown.observe(update_marker_locations)
+#     search_box.observe(update_marker_locations)
     @render_widget
     async def map():
 
@@ -376,7 +435,39 @@ def server(input, output, session):
         scale = ScaleControl(position="bottomleft", imperial=False)
         m.add(scale)
 
-        forecast_button = Button(description="Forecast at this position", layout=Layout(width="200px"))
+        # Country filter dropdown as an ipywidgets component, because displaying all WPPs is too resource-heavy
+        country_dropdown = Dropdown(
+            options=["All", "Select a Country"] + sorted(set(countries)),
+            value="Select a Country",
+            layout=Layout(width="200px", object_position="left")
+        )
+
+        # Create a search input box for WPP names
+        search_box = Text(
+            placeholder="Search WPP by name...",
+            layout=Layout(width="200px", object_position="left")
+        )
+
+        # Checkbox for toggling the WPP markers
+        marker_checkbox = Checkbox(
+            value=True,  # Default: Heatmap is visible
+            description="Wind Power Plants",
+            layout=Layout(object_position="left")
+        )
+
+        # Checkbox for toggling the heatmap
+        heatmap_checkbox = Checkbox(
+            value=True,  # Default: Heatmap is visible
+            description="Heatmap",
+            layout=Layout(object_position="left")
+        )
+
+        # Wind speed checkbox for toggling the velocity layer
+        velocity_checkbox = Checkbox(
+            value=False,  # Default: Heatmap is not visible
+            description="Wind Speed",
+            layout=Layout(object_position="left")
+        )
 
         # Slider for time steps
         play = Play(min=0, max=total_hours, step=1, value=0, interval=2000, description='Time Step') # 2000 ms per time step
@@ -384,25 +475,38 @@ def server(input, output, session):
         formatted_times = [t.strftime('%d/%m %H:%M') for t in valid_times_dt] # known bug: SelectionSlider gives too little place for values --> year can't be displayed
         slider = SelectionSlider(options=formatted_times, value=formatted_times[0], description='Time')
         jslink((play, 'value'), (slider, 'index'))
-        slider_box = VBox([play, slider], layout=Layout(object_position="center"))
+        slider_box = HBox([play, slider], layout=Layout(object_position="center", margin="0px 0px 0px 95px"))
 
-        # Organise widgets vertically
-        all_controls = VBox([slider_box, forecast_button])
+        # Organise widgets horizontally
+        filter_controls = HBox([country_dropdown, search_box], layout=Layout(margin="0px 0px 0px 95px"))
+        checkbox_controls = VBox([marker_checkbox, heatmap_checkbox, velocity_checkbox])
+        all_controls = VBox([filter_controls, slider_box, checkbox_controls])
         
         m.add(WidgetControl(widget=all_controls, position='topright'))
 
         shared_filtered_data = {}
 
-        def update_marker_locations(button=None):
-            center_lat, center_lon = m.center
+        def update_marker_locations(change):
 
-            # Example: Filter WPPs around this region ±5°
-            filtered_indices = [
-                i for i in range(len(lats_plants))
-                if abs(lats_plants[i] - center_lat) <= 0.5 and abs(lons_plants[i] - center_lon) <= 0.5
-            ]
+            selected_country = country_dropdown.value
+            search_query = search_box.value.lower().strip()
 
-            # Optional: Store somewhere or update the map accordingly
+            # Adjust center without changing zoom
+            if selected_country in country_centers:
+                m.center = country_centers[selected_country]  # Set centre to selected country
+        
+            # Filter WPPs based on the selected country
+            if selected_country == "All":
+                filtered_indices = range(len(ids))  # Show all WPPs
+            elif selected_country == "Select a Country":
+                filtered_indices = []  # show nothing
+            else:
+                filtered_indices = [i for i, country in enumerate(countries) if country == selected_country]
+
+            # Apply search filtering based on name
+            if search_query:
+                filtered_indices = [i for i in filtered_indices if search_query in project_names[i].lower()]
+
             shared_filtered_data["lats"] = [lats_plants[i] for i in filtered_indices]
             shared_filtered_data["lons"] = [lons_plants[i] for i in filtered_indices]
             shared_filtered_data["ids"] = [ids[i] for i in filtered_indices]
@@ -448,13 +552,21 @@ def server(input, output, session):
 
                 marker_storage["marker"].append(marker)
 
+            def marker_toggle(change):
+
+                marker_toggle_status = marker_checkbox.value
+
                 # Remove existing marker cluster layer
                 for layer in m.layers:
                     if isinstance(layer, MarkerCluster):
                         m.remove(layer)
 
-                marker_cluster = MarkerCluster(markers=marker_storage["marker"])
-                m.add(marker_cluster)
+                if marker_toggle_status: # Only add marker cluster if the checkbox is checked
+                    marker_cluster = MarkerCluster(markers=marker_storage["marker"])
+                    m.add(marker_cluster)
+
+            marker_toggle(None)
+            marker_checkbox.observe(marker_toggle, names='value')
 
             # Update predictions and visualisations of it (layers, marker popups) based on slider value
             def update_predictions(change):
@@ -481,6 +593,50 @@ def server(input, output, session):
                 time_step = time_step_local - time_shift
                 lead_time = int((time_step - start_time) / np.timedelta64(1, 'h'))
                 step_index = int(lead_time / step_size_hours)
+
+                def velocity_toggle(change):
+
+                    velocity_toggle_state = velocity_checkbox.value
+
+                    # Remove existing velocity layer
+                    for layer in m.layers:
+                        if isinstance(layer, Velocity):
+                            m.remove(layer)
+
+                    if velocity_toggle_state:  # Only add velocity layer if the checkbox is checked
+
+                        # Create new single-step dataset
+                        new_ds_velocity = xr.Dataset(
+                            {
+                                "u_wind": (["lat", "lon"], u_world[step_index]),
+                                "v_wind": (["lat", "lon"], v_world[step_index])
+                            },
+                            coords={
+                                "lat": lats_world,
+                                "lon": lons_world
+                            }
+                        )
+
+                        display_options = {
+                            'velocityType': f'Wind Forecast {time_step_local}',
+                            'displayPosition': 'bottomleft',
+                            'displayEmptyString': 'No wind data'
+                        }
+
+                        velocity_layer = Velocity(
+                            data=new_ds_velocity,
+                            zonal_speed='u_wind',
+                            meridional_speed='v_wind',
+                            latitude_dimension='lat',
+                            longitude_dimension='lon',
+                            velocity_scale=0.01,
+                            max_velocity=20,
+                            display_options=display_options
+                        )
+                        m.add(velocity_layer)
+
+                velocity_toggle(None)
+                velocity_checkbox.observe(velocity_toggle, names='value')
 
                 # while time step and velocity layer calculations can always be done, the model inference and related visualisations are only possible with non-empty shared_filtered_data of wpps
                 if shared_filtered_data["ids"]:
@@ -555,11 +711,29 @@ def server(input, output, session):
                                 f"<strong><a href='{link}' target='_blank' style='color:blue; text-decoration:underline;'>Link to The Wind Power</a></strong><br>"\
                                 f"<button onclick=\"Shiny.setInputValue('entire_forecast', {{id: {id}, timestamp: Date.now()}})\">Entire Forecast</button>" # timestamp to always have a slightly different button value to ensure that each and every click on the "entire forecast" button triggers the event, even click on same button twice
 
+                    def heatmap_toggle(change):
+
+                        heatmap_toggle_state = heatmap_checkbox.value
+
+                        # Remove existing heatmap layer
+                        for layer in m.layers:
+                            if isinstance(layer, Heatmap):
+                                m.remove(layer)
+
+                        if heatmap_toggle_state:  # Only add heatmap if the checkbox is checked
+                            heatmap_data = [(lat, lon, prod) for lat, lon, prod in zip(shared_filtered_data["lats"], shared_filtered_data["lons"], predictions)]
+                            heatmap = Heatmap(locations=heatmap_data, radius=10, blur=10, max_zoom=10)
+                            m.add(heatmap)
+
+                    heatmap_toggle(None)
+                    heatmap_checkbox.observe(heatmap_toggle, names='value')
+
             update_predictions(None)
             slider.observe(update_predictions, names='value')
 
-        update_marker_locations()
-        forecast_button.on_click(update_marker_locations)
+        update_marker_locations(None)
+        country_dropdown.observe(update_marker_locations, names='value')
+        search_box.observe(update_marker_locations, names='value')
 
         # Add FullScreenControl to map
         m.add(FullScreenControl())

@@ -57,12 +57,16 @@
         }
 
         ul li {
-            display: inline;  /* Forces the list items to behave inline */
             margin-right: 10px; /* Optional spacing between list items */
             padding: 8px 0;
             display: flex;
             align-items: center;
         }
+
+        li a {
+            display: inline;
+        }
+
 
         ul li::before {
             content: "⚡";
@@ -148,8 +152,6 @@
         <h4>Usage</h4>
         <ul>
             <li>Extreme values in features and long forecasting times reduce accuracy. Only the latter is accounted for by the standard deviation.</li>
-            <li>Please allow for some charging time when selecting a country with many wind power plants. For this reasons, it is not recommended to select all wind power plants at once.</li>
-            <li>The wind speed layer is particularly resource intensive and needs a high loading time.</li>
             <li>Missing Hub Height (26 % of displayed wind power plants): Mean value from database is used as default</li>
             <li>Missing Commissioning Date (6 %): June 2010 is used as default</li>
             <li>Unknown Turbine Type (16 %): Equal mixture of all known turbine types</li>
@@ -173,7 +175,7 @@
         <ul>
             <li>Wind Power Plant Metadata: <a href="https://www.thewindpower.net/index_de.php" target="_blank">The Wind Power</a></li>
             <li>Wind Power Plant Production Data: <a href="https://transparency.entsoe.eu/" target="_blank">ENTSO-E Transparency Platform</a></li>
-            <li>Weather Data: <a href="https://www.ecmwf.int/" target="_blank">ECMWF</a></li>
+            <li>Wind Data: <a href="https://www.ecmwf.int/" target="_blank">ECMWF</a></li>
         </ul>
 
         <h4>Data Security & Privacy</h4>
