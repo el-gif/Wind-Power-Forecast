@@ -5,7 +5,7 @@ from openpyxl import Workbook
 from shiny import ui, App, reactive, render
 from shinywidgets import render_widget, output_widget
 from ipyleaflet import Map, Marker, MarkerCluster, WidgetControl, FullScreenControl, ScaleControl
-from ipywidgets import SelectionSlider, Play, VBox, jslink, Layout, HTML, Label # pip install ipywidgets==7.6.5, because version 8 has an issue with popups (https://stackoverflow.com/questions/75434737/shiny-for-python-using-add-layer-for-popus-from-ipyleaflet)
+from ipywidgets import SelectionSlider, Play, VBox, jslink, Layout, HTML, Button # pip install ipywidgets==7.6.5, because version 8 has an issue with popups (https://stackoverflow.com/questions/75434737/shiny-for-python-using-add-layer-for-popus-from-ipyleaflet)
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -24,7 +24,6 @@ import torch
 import torch.nn as nn
 import datetime
 import matplotlib.dates as mdates
-import asyncio
 
 
 
@@ -33,8 +32,6 @@ import asyncio
 # Limit to Europe
 lat_min, lat_max = 35, 72
 lon_min, lon_max = -25, 45
-center_lat = (lat_min + lat_max) / 2
-center_lon = (lon_min + lon_max) / 2
 
 # Selectable time zones
 timezone_list = ["UTC-1", "UTC", "UTC+1", "UTC+2", "UTC+3"]
@@ -370,15 +367,16 @@ def server(input, output, session):
 
         # Create the map
         m = Map(
-            center=[center_lat, center_lon],
-            zoom=11,
+            center=[(lat_min + lat_max) / 2, (lon_min + lon_max) / 2],
+            zoom=5,
             layout=Layout(width='100%', height='90vh'),
             scroll_wheel_zoom=True
         )
-        update_enabled = {"value": True}  # mutable flag
         
         scale = ScaleControl(position="bottomleft", imperial=False)
         m.add(scale)
+
+        forecast_button = Button(description="Forecast at this position", layout=Layout(width="200px"))
 
         # Slider for time steps
         play = Play(min=0, max=total_hours, step=1, value=0, interval=2000, description='Time Step') # 2000 ms per time step
@@ -387,104 +385,79 @@ def server(input, output, session):
         slider = SelectionSlider(options=formatted_times, value=formatted_times[0], description='Time')
         jslink((play, 'value'), (slider, 'index'))
         slider_box = VBox([play, slider], layout=Layout(object_position="center"))
-        m.add(WidgetControl(widget=slider_box, position='topright'))
 
-        # Label for zoom level --> too slow, particularly when markers are added, although the code snippet is above the marker adding
-        zoom_label = Label(value=f"Zoom: {m.zoom}", layout=Layout(width='80px'))
-        m.add(WidgetControl(widget=zoom_label, position='bottomright'))
+        # Organise widgets vertically
+        all_controls = VBox([slider_box, forecast_button])
+        
+        m.add(WidgetControl(widget=all_controls, position='topright'))
 
-        # Update when zoom changes
-        def update_zoom_label(event):
-            zoom_label.value = f"Zoom: {m.zoom:.1f}"
+        shared_filtered_data = {}
 
-        m.observe(update_zoom_label, names=["zoom"])
+        def update_marker_locations(button=None):
+            center_lat, center_lon = m.center
 
-        def on_marker_click(event=None, **kwargs):
-            update_enabled["value"] = False  # disable zoom update when just a popup menu is clicked
-
-        async def handle_zoom_change(event):
-
-            if not update_enabled["value"]:
-                print("Zoom handler disabled.")
-                update_enabled["value"] = True #re-enable zoom update
-                return
-
-           
-            zoom_level = m.zoom
-            print(f"Current zoom: {zoom_level}")
-
-            # Remove existing marker cluster if present
-            for layer in m.layers:
-                if isinstance(layer, MarkerCluster):
-                    m.remove(layer)
-
-            if zoom_level < 11:
-                return
-            
-            await asyncio.sleep(0.1)  # wait 100 ms before getting m.bounds to ensure they are updated
-
-            # initially, bound are not yet set
-            if not m.bounds or len(m.bounds) != 2:
-                south_west = (center_lat - 0.2, center_lon - 0.4)
-                north_east = (center_lat + 0.2, center_lon + 0.4)
-            else:
-                south_west, north_east = m.bounds
-
-            lat_min_visible, lon_min_visible = south_west
-            lat_max_visible, lon_max_visible = north_east
-
+            # Example: Filter WPPs around this region ±5°
             filtered_indices = [
                 i for i in range(len(lats_plants))
-                if lat_min_visible <= lats_plants[i] <= lat_max_visible
-                and lon_min_visible <= lons_plants[i] <= lon_max_visible
+                if abs(lats_plants[i] - center_lat) <= 0.5 and abs(lons_plants[i] - center_lon) <= 0.5
             ]
 
             # Optional: Store somewhere or update the map accordingly
-            filtered_data = pd.DataFrame({
-                "lats": [lats_plants[i] for i in filtered_indices],
-                "lons": [lons_plants[i] for i in filtered_indices],
-                "ids": [ids[i] for i in filtered_indices],
-                "names": [project_names[i] for i in filtered_indices],
-                "capacities": [capacities[i] for i in filtered_indices],
-                "numbers": [numbers_of_turbines[i] for i in filtered_indices],
-                "turbines": [turbine_types[i] for i in filtered_indices],
-                "operators": [operators[i] for i in filtered_indices],
-                "ages": [ages_months[i] for i in filtered_indices],
-                "hub_heights": [hub_heights[i] for i in filtered_indices],
-                "links": [links[i] for i in filtered_indices]
-            })
+            shared_filtered_data["lats"] = [lats_plants[i] for i in filtered_indices]
+            shared_filtered_data["lons"] = [lons_plants[i] for i in filtered_indices]
+            shared_filtered_data["ids"] = [ids[i] for i in filtered_indices]
+            shared_filtered_data["names"] = [project_names[i] for i in filtered_indices]
+            shared_filtered_data["capacities"] = [capacities[i] for i in filtered_indices]
+            shared_filtered_data["numbers"] = [numbers_of_turbines[i] for i in filtered_indices]
+            shared_filtered_data["turbines"] = [turbine_types[i] for i in filtered_indices]
+            shared_filtered_data["operators"] = [operators[i] for i in filtered_indices]
+            shared_filtered_data["ages"] = [ages_months[i] for i in filtered_indices]
+            shared_filtered_data["hub_heights"] = [hub_heights[i] for i in filtered_indices]
+            shared_filtered_data["links"] = [links[i] for i in filtered_indices]
 
             marker_storage["marker"] = []
-            for _, row in filtered_data.iterrows():                
+            for name, capacity, number_of_turbines, turbine_type, operator, id, lat, lon, link in zip(
+                shared_filtered_data["names"],
+                shared_filtered_data["capacities"],
+                shared_filtered_data["numbers"],
+                shared_filtered_data["turbines"],
+                shared_filtered_data["operators"],
+                shared_filtered_data["ids"],
+                shared_filtered_data["lats"],
+                shared_filtered_data["lons"],
+                shared_filtered_data["links"]
+                ):                
                 popup_content = HTML(
-                    f"<strong>Project Name:</strong> {row['names']}<br>"
-                    f"<strong>Capacity:</strong> {row['capacities']} MW<br>"
-                    f"<strong>Number of turbines:</strong> {row['numbers']}<br>"
-                    f"<strong>Turbine Type:</strong> {row['turbines']}<br>"
-                    f"<strong>Operator:</strong> {row['operators']}<br>"
+                    f"<strong>Project Name:</strong> {name}<br>"
+                    f"<strong>Capacity:</strong> {capacity} MW<br>"
+                    f"<strong>Number of turbines:</strong> {number_of_turbines}<br>"
+                    f"<strong>Turbine Type:</strong> {turbine_type}<br>"
+                    f"<strong>Operator:</strong> {operator}<br>"
                     f"<strong>Wind speed forecast:</strong> select forecast step<br>"
                     f"<strong>Production forecast:</strong> select forecast step<br>"
-                    f"<strong><a href='{row['links']}' target='_blank' style='color:blue; text-decoration:underline;'>Link to The Wind Power</a></strong><br>"
-                    f"<button onclick=\"Shiny.setInputValue('entire_forecast', {{id: {row['ids']}, timestamp: Date.now()}})\">Entire Forecast</button>"
+                    f"<strong><a href='{link}' target='_blank' style='color:blue; text-decoration:underline;'>Link to The Wind Power</a></strong><br>"
+                    f"<button onclick=\"Shiny.setInputValue('entire_forecast', {{id: {id}, timestamp: Date.now()}})\">Entire Forecast</button>" # timestamp to always have a slightly different button value to ensure that each and every click on the "entire forecast" button triggers the event, even click on same button twice
                 )
 
                 marker = Marker(
-                    location=(row["lats"], row["lons"]),
+                    location=(lat, lon),
                     popup=popup_content,
                     rise_offset=True,
                     draggable=False
                 )
 
-                marker.on_click(on_marker_click)
                 marker_storage["marker"].append(marker)
 
-            marker_cluster = MarkerCluster(markers=marker_storage["marker"])
-            m.add(marker_cluster)
+                # Remove existing marker cluster layer
+                for layer in m.layers:
+                    if isinstance(layer, MarkerCluster):
+                        m.remove(layer)
 
+                marker_cluster = MarkerCluster(markers=marker_storage["marker"])
+                m.add(marker_cluster)
+
+            # Update predictions and visualisations of it (layers, marker popups) based on slider value
             def update_predictions(change):
-
-                if filtered_data["ids"].empty:
-                    return
 
                 # Convert the selected slider value (HH:MM dd/mm) back to datetime
                 time_step_local = pd.to_datetime(slider.value, format='%d/%m %H:%M')  # Convert to datetime
@@ -508,72 +481,85 @@ def server(input, output, session):
                 time_step = time_step_local - time_shift
                 lead_time = int((time_step - start_time) / np.timedelta64(1, 'h'))
                 step_index = int(lead_time / step_size_hours)
+
+                # while time step and velocity layer calculations can always be done, the model inference and related visualisations are only possible with non-empty shared_filtered_data of wpps
+                if shared_filtered_data["ids"]:
                     
-                # total_selection[step_index] should have shape (len(lats), len(lons))
-                spatial_interpolator = RegularGridInterpolator(
-                    (lats, lons),  # note: order is (y, x)
-                    total_selection[step_index], 
-                    method='linear', 
-                    bounds_error=False, 
-                    fill_value=None
-                )
+                    # total_selection[step_index] should have shape (len(lats), len(lons))
+                    spatial_interpolator = RegularGridInterpolator(
+                        (lats, lons),  # note: order is (y, x)
+                        total_selection[step_index], 
+                        method='linear', 
+                        bounds_error=False, 
+                        fill_value=None
+                    )
 
-                # Each point must be (lat, lon)
-                wind_speeds_at_points = spatial_interpolator(np.column_stack((filtered_data["lats"], filtered_data["lons"])))
+                    # Each point must be (lat, lon)
+                    wind_speeds_at_points = spatial_interpolator(np.column_stack((shared_filtered_data["lats"], shared_filtered_data["lons"])))
 
-                # scaling
-                scaled_ages_months = scalers[lead_time]["ages"].transform(np.array(filtered_data["ages"]).reshape(-1, 1)).flatten()
-                scaled_hub_heights = scalers[lead_time]["hub_heights"].transform(np.array(filtered_data["hub_heights"]).reshape(-1, 1)).flatten()
-                scaled_wind_speeds_at_points = scalers[lead_time]["winds"].transform(wind_speeds_at_points.reshape(-1, 1)).flatten()
+                    # spatial_interpolator = interp2d(lons, lats, total_selection[step_index], kind='linear')
+                    # wind_speeds_at_points = np.array([spatial_interpolator(lon, lat)[0] for lon, lat in zip(filtered_lons, filtered_lats)])
 
-                number_wpps = len(filtered_data["ids"])
-                turbine_types_onehot = np.zeros((number_wpps, len(known_turbine_types)))
-                for i, turbine_type in enumerate(filtered_data["turbines"]):
-                    if turbine_type not in known_turbine_types:
-                        turbine_types_onehot[i] = np.full(len(known_turbine_types), 1.0 / len(known_turbine_types)) # equal mixture of all known turbine types
-                    else:
-                        turbine_types_onehot[i] = encoder.transform(np.array([[turbine_type]])).flatten()
+                    # scaling
+                    scaled_ages_months = scalers[lead_time]["ages"].transform(np.array(shared_filtered_data["ages"]).reshape(-1, 1)).flatten()
+                    scaled_hub_heights = scalers[lead_time]["hub_heights"].transform(np.array(shared_filtered_data["hub_heights"]).reshape(-1, 1)).flatten()
+                    scaled_wind_speeds_at_points = scalers[lead_time]["winds"].transform(wind_speeds_at_points.reshape(-1, 1)).flatten()
 
-                all_input_features = np.hstack([
-                    turbine_types_onehot,
-                    scaled_hub_heights.reshape(-1, 1),
-                    scaled_ages_months.reshape(-1, 1),
-                    scaled_wind_speeds_at_points.reshape(-1, 1)
-                ])
+                    number_wpps = len(shared_filtered_data["ids"])
+                    turbine_types_onehot = np.zeros((number_wpps, len(known_turbine_types)))
+                    for i, turbine_type in enumerate(shared_filtered_data["turbines"]):
+                        if turbine_type not in known_turbine_types:
+                            turbine_types_onehot[i] = np.full(len(known_turbine_types), 1.0 / len(known_turbine_types)) # equal mixture of all known turbine types
+                        else:
+                            turbine_types_onehot[i] = encoder.transform(np.array([[turbine_type]])).flatten()
 
-                input_tensor = torch.tensor(all_input_features, dtype=torch.float32)
+                    all_input_features = np.hstack([
+                        turbine_types_onehot,
+                        scaled_hub_heights.reshape(-1, 1),
+                        scaled_ages_months.reshape(-1, 1),
+                        scaled_wind_speeds_at_points.reshape(-1, 1)
+                    ])
 
-                model = models[lead_time]
-                with torch.no_grad():
-                    cap_factors = torch.clamp(model(input_tensor).flatten(), min=0.0, max=1.0)
-                    predictions = cap_factors * torch.tensor(filtered_data["capacities"], dtype=torch.float32)
+                    input_tensor = torch.tensor(all_input_features, dtype=torch.float32)
 
-                predictions = predictions.numpy()
-                
-                # Update marker pop-ups with production values
-                for marker, (_, row), wind_speed, prediction in zip(
-                    marker_storage["marker"],
-                    filtered_data.iterrows(),
-                    wind_speeds_at_points,
-                    predictions
-                ):
-                    marker.popup.value = \
-                        f"<strong>Project Name:</strong> {row['names']}<br>"\
-                        f"<strong>Capacity:</strong> {row['capacities']} MW<br>"\
-                        f"<strong>Number of Turbines:</strong> {row['numbers']}<br>"\
-                        f"<strong>Turbine Type:</strong> {row['turbines']}<br>"\
-                        f"<strong>Operator:</strong> {row['operators']}<br>"\
-                        f"<strong>Wind speed forecast:</strong> {wind_speed:.2f} m/s<br>"\
-                        f"<strong>Production forecast:</strong> {prediction:.2f} MW<br>"\
-                        f"<strong><a href='{row['links']}' target='_blank' style='color:blue; text-decoration:underline;'>Link to The Wind Power</a></strong><br>"\
-                        f"<button onclick=\"Shiny.setInputValue('entire_forecast', {{id: {row['ids']}, timestamp: Date.now()}})\">Entire Forecast</button>" # timestamp to always have a slightly different button value to ensure that each and every click on the "entire forecast" button triggers the event, even click on same button twice
+                    model = models[lead_time]
+                    with torch.no_grad():
+                        cap_factors = torch.clamp(model(input_tensor).flatten(), min=0.0, max=1.0)
+                        predictions = cap_factors * torch.tensor(shared_filtered_data["capacities"], dtype=torch.float32)
+
+                    predictions = predictions.numpy()
+
+                    if marker_storage["marker"]:
+                    
+                        # Update marker pop-ups with production values
+                        for marker, name, capacity, number_of_turbines, turbine_type, operator, wind_speed, prediction, id, link in zip(
+                            marker_storage["marker"],
+                            shared_filtered_data["names"],
+                            shared_filtered_data["capacities"],
+                            shared_filtered_data["numbers"],
+                            shared_filtered_data["turbines"],
+                            shared_filtered_data["operators"],
+                            wind_speeds_at_points,
+                            predictions,
+                            shared_filtered_data["ids"],
+                            shared_filtered_data["links"]
+                            ):
+                            marker.popup.value = \
+                                f"<strong>Project Name:</strong> {name}<br>"\
+                                f"<strong>Capacity:</strong> {capacity} MW<br>"\
+                                f"<strong>Number of Turbines:</strong> {number_of_turbines}<br>"\
+                                f"<strong>Turbine Type:</strong> {turbine_type}<br>"\
+                                f"<strong>Operator:</strong> {operator}<br>"\
+                                f"<strong>Wind speed forecast:</strong> {wind_speed:.2f} m/s<br>"\
+                                f"<strong>Production forecast:</strong> {prediction:.2f} MW<br>"\
+                                f"<strong><a href='{link}' target='_blank' style='color:blue; text-decoration:underline;'>Link to The Wind Power</a></strong><br>"\
+                                f"<button onclick=\"Shiny.setInputValue('entire_forecast', {{id: {id}, timestamp: Date.now()}})\">Entire Forecast</button>" # timestamp to always have a slightly different button value to ensure that each and every click on the "entire forecast" button triggers the event, even click on same button twice
 
             update_predictions(None)
             slider.observe(update_predictions, names='value')
 
-        await handle_zoom_change(None)
-        m.observe(lambda e: asyncio.create_task(handle_zoom_change(e)), names=["zoom", "center"])
-#        m.observe(handle_zoom_change, names=["zoom", "center"])
+        update_marker_locations()
+        forecast_button.on_click(update_marker_locations)
 
         # Add FullScreenControl to map
         m.add(FullScreenControl())
